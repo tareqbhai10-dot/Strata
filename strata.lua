@@ -42,7 +42,9 @@ local settings = {
     ironXray = false,
     coalXray = false,
     goldXray = false,
+    chestXray = false,
     oreDistance = 250,
+    chestDistance = 250,
     killAura = false,
     auraRange = 12,
     faceTarget = true,
@@ -95,6 +97,7 @@ local indicatorFeatures = {
     {"ironXray", "Iron X-ray"},
     {"coalXray", "Coal X-ray"},
     {"goldXray", "Gold X-ray"},
+    {"chestXray", "Chest ESP"},
     {"noFall", "No fall damage"},
     {"noDrown", "No drowning"},
     {"fastBreak", "Insta Break"},
@@ -128,12 +131,13 @@ local oreColors = {
     iron = Color3.fromRGB(255, 169, 93),
     coal = Color3.fromRGB(234, 234, 234),
     gold = Color3.fromRGB(255, 218, 68),
+    chest = Color3.fromRGB(255, 145, 55),
 }
 local friendHighlightColor = Color3.fromRGB(80, 245, 125)
 local playerHighlightColor = Color3.fromRGB(255, 90, 90)
 
 local function anyOreXray()
-    return settings.diamondXray or settings.ironXray or settings.coalXray or settings.goldXray
+    return settings.diamondXray or settings.ironXray or settings.coalXray or settings.goldXray or settings.chestXray
 end
 
 -- Terraform identifies voxels by numeric block IDs, including underground
@@ -149,6 +153,10 @@ pcall(function()
             if block.name == "iron_ore" then oreIds[id] = "iron" end
             if block.name == "coal_ore" then oreIds[id] = "coal" end
             local blockName = string.lower(tostring(block.name or ""))
+            if blockName == "chest" or string.find(blockName, "_chest", 1, true)
+                or string.find(blockName, "chest_", 1, true) then
+                oreIds[id] = "chest"
+            end
             if string.find(blockName, "gold", 1, true) and string.find(blockName, "ore", 1, true) then oreIds[id] = "gold" end
         end
     end
@@ -194,6 +202,12 @@ local function oreKind(part)
     end
     local name = string.lower(part.Name)
     local parent = part.Parent
+    local function chestName(value)
+        return value == "chest" or value == "trapped_chest" or value == "double_chest"
+    end
+    if chestName(name) or (parent and parent:IsA("Model") and chestName(string.lower(parent.Name))) then
+        return "chest"
+    end
     if parent and parent:IsA("Model") then
         name = name .. " " .. string.lower(parent.Name)
     end
@@ -226,13 +240,21 @@ local function refreshOreLocations()
             local data = ChunksSystem.readChunkData(region, chunk)
             local states = data.blockStates or {}
             local seen = {}
+            local added = {}
             local function addBlock(key, id)
+                key = tostring(key)
                 local kind = oreIds[id]
                 if not kind then return end
+                if added[key] then
+                    added[key].kind = kind
+                    return
+                end
                 local ok, position = pcall(Coordinates.coordinatesFromNames, region, chunk, tostring(key))
                 if ok and typeof(position) == "Vector3" then
                     -- Coordinates are block-grid units; each voxel is 4 studs.
-                    table.insert(found, {position = position * 4, kind = kind})
+                    local entry = {position = position * 4, kind = kind}
+                    added[key] = entry
+                    table.insert(found, entry)
                 end
             end
             for key, id in pairs(data.blocks or {}) do
@@ -243,6 +265,19 @@ local function refreshOreLocations()
             end
             for key, state in pairs(states) do
                 if not seen[key] then addBlock(key, BlockState.getBlockId(state)) end
+            end
+            -- Placed blocks can be absent from the original chunk data.
+            -- Their rendered block stores the current ID and the same grid key.
+            if settings.chestXray then
+                for _, block in ipairs(folder:GetChildren()) do
+                    local id = tonumber(block:GetAttribute("i"))
+                    local encoded = block:GetAttribute("b")
+                    if encoded then
+                        local ok, decoded = pcall(BlockState.getBlockId, encoded)
+                        if ok then id = decoded end
+                    end
+                    if oreIds[id] == "chest" then addBlock(block.Name, id) end
+                end
             end
         end
         task.wait()
@@ -301,9 +336,10 @@ local function updateOreMarkers()
     local root = getRoot()
     local nearby = {}
     if root then
-        local maxDistanceSquared = settings.oreDistance * settings.oreDistance
         for _, ore in ipairs(oreLocations) do
             if settings[ore.kind .. "Xray"] then
+                local range = ore.kind == "chest" and settings.chestDistance or settings.oreDistance
+                local maxDistanceSquared = range * range
                 local delta = ore.position - root.Position
                 local distanceSquared = delta:Dot(delta)
                 if distanceSquared <= maxDistanceSquared then
@@ -417,7 +453,8 @@ local function updateEsp()
         for part, kind in pairs(ores) do
             if part.Parent and settings[kind .. "Xray"] and oreKind(part) == kind then
                 local distance = (part.Position - root.Position).Magnitude
-                if distance <= settings.oreDistance then
+                local range = kind == "chest" and settings.chestDistance or settings.oreDistance
+                if distance <= range then
                     local liveKind, checked = liveOreKind(part.Position)
                     if not checked or liveKind == kind then
                         table.insert(nearby, {part = part, kind = kind, distance = distance})
@@ -474,7 +511,7 @@ end)
 task.spawn(function()
     while alive do
         if anyOreXray() then refreshOreLocations() end
-        task.wait(8)
+        task.wait(settings.chestXray and 2 or 8)
     end
 end)
 
@@ -594,6 +631,7 @@ local bindings = {
     {id = "ironXray", label = "Iron X-ray", group = "Ores", flag = "ironXray"},
     {id = "coalXray", label = "Coal X-ray", group = "Ores", flag = "coalXray"},
     {id = "goldXray", label = "Gold X-ray", group = "Ores", flag = "goldXray"},
+    {id = "chestXray", label = "Chest ESP", group = "ESP", flag = "chestXray"},
     {id = "noFall", label = "No fall damage", group = "Movement", flag = "noFall"},
     {id = "noDrown", label = "No drowning", group = "Movement", flag = "noDrown"},
     {id = "fastBreak", label = "Insta Break", group = "Movement", flag = "fastBreak"},
@@ -886,8 +924,8 @@ end
 local function setFlag(key, value, fromUi)
     if value and (key == "noFall" or key == "noDrown") and not damageHook then notify("Damage interception unsupported", "Protection"); return end
     if value and key == "fastBreak" and not breakHook then notify("Function hooking unsupported", "Mining"); return end
-    if key == "oreDistance" or key == "playerNameDistance" then
-        local minimum = key == "oreDistance" and 50 or 25
+    if key == "oreDistance" or key == "chestDistance" or key == "playerNameDistance" then
+        local minimum = key == "playerNameDistance" and 25 or 50
         value = math.clamp(tonumber(value) or minimum, minimum, 800)
     end
     if settings[key] == value then return end
@@ -902,7 +940,7 @@ local function setFlag(key, value, fromUi)
         end
     end
     if key == "theme" and window then window:ChangeTheme(value == "Light" and "frost" or "default") end
-    if value and (key == "diamondXray" or key == "ironXray" or key == "coalXray" or key == "goldXray") then task.spawn(refreshOreLocations) end
+    if value and (key == "diamondXray" or key == "ironXray" or key == "coalXray" or key == "goldXray" or key == "chestXray") then task.spawn(refreshOreLocations) end
     syncHooks()
     if indicatorKeys[key] then updateActiveList() end
 end
@@ -1125,7 +1163,9 @@ env.TerraformHelper = {
             ironXray = settings.ironXray,
             coalXray = settings.coalXray,
             goldXray = settings.goldXray,
+            chestXray = settings.chestXray,
             oreDistance = settings.oreDistance,
+            chestDistance = settings.chestDistance,
             playerEsp = settings.playerEsp,
             animalEsp = settings.animalEsp,
             playerNames = settings.playerNames,
@@ -1216,7 +1256,7 @@ toggle(visualTab, "Iron X-ray", "ironXray")
 toggle(visualTab, "Coal X-ray", "coalXray")
 toggle(visualTab, "Gold X-ray", "goldXray")
 slider(visualTab, "Ore range", "oreDistance", 50, 800, 25, " studs")
-visualTab:CreateText({name = "Ore detection", text = "Scans up to 800 studs and marks the 20 nearest matching voxels from loaded Terraform chunks."})
+visualTab:CreateText({name = "Block detection", text = "Scans up to 800 studs and marks the 20 nearest enabled ores and chests from loaded Terraform chunks."})
 
 local combatTab = window:CreateTab({name = "Combat"})
 combatTab:CreateSection({name = "Player aura"})
@@ -1250,6 +1290,9 @@ slider(combatTab, "Animal radius", "animalAuraRange", 4, 28, 1, " studs")
 combatTab:CreateText({name = "Target rules", text = "Player aura skips protected users. Animal aura only attacks living non-player models. Server hit checks still apply."})
 
 local espTab = window:CreateTab({name = "ESP"})
+espTab:CreateSection({name = "Chests"})
+toggle(espTab, "Chest ESP", "chestXray", "Show chests through walls.")
+slider(espTab, "Chest range", "chestDistance", 50, 800, 25, " studs")
 espTab:CreateSection({name = "Player names"})
 toggle(espTab, "Player Name ESP", "playerNames", "Roblox friends and whitelisted usernames appear green.")
 toggle(espTab, "Player highlight", "playerEsp", "Friends and whitelisted players are green; others are red.")
@@ -1381,6 +1424,7 @@ local settingsTab = window:CreateTab({name = "Settings"})
 settingsTab:CreateButton({name = "Stop helper and restore", callback = stop})
 local searchableFeatures = {
     {"Diamond X-ray", "X-ray"}, {"Iron X-ray", "X-ray"}, {"Coal X-ray", "X-ray"}, {"Gold X-ray", "X-ray"},
+    {"Chest ESP", "ESP"},
     {"Player kill aura", "Combat"}, {"Animal kill aura", "Combat"}, {"Whitelist", "Combat"},
     {"Player Name ESP", "ESP"}, {"Animal Name ESP", "ESP"}, {"Player highlight", "ESP"}, {"Animal highlight", "ESP"},
     {"No fall damage", "Movement"}, {"No drowning damage", "Movement"}, {"Insta Break", "Movement"},
@@ -1445,4 +1489,3 @@ end))
 refreshLists()
 refreshKeybindInfo()
 window:Notify({title = "Strata", content = "Ready. RightControl reopens the GUI.", duration = 4})
-
