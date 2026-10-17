@@ -816,16 +816,35 @@ if not damageHook and type(hookmetamethod) == "function" and type(getnamecallmet
     env.TerraformDamageHook = state
 end
 
+local function holdingSword()
+    if HotbarState and ItemsData then
+        local id = HotbarState.getCurrentlyHeldItemId()
+        local item = id and ItemsData[id]
+        if item then
+            return string.find(string.lower(tostring(item.name or "")), "sword", 1, true) ~= nil
+        end
+    end
+    local character = LocalPlayer.Character
+    local tool = character and character:FindFirstChildOfClass("Tool")
+    return tool ~= nil and string.find(string.lower(tool.Name), "sword", 1, true) ~= nil
+end
+
 local breakHook = env.TerraformBreakHook
+if breakHook and breakHook.version ~= 2 then
+    breakHook.enabled = false
+    breakHook = nil
+    env.TerraformBreakHook = nil
+end
 if not breakHook and type(hookfunction) == "function" then
     local ok, originalFunction = pcall(require, ReplicatedStorage.Systems.ItemsSystem.Libs.GetBreakingTime)
     if ok and type(originalFunction) == "function" then
-        local state = {enabled = false, value = 0}
+        local state = {enabled = false, value = 0, version = 2, holdingSword = holdingSword}
         local original
         original = hookfunction(originalFunction, asClosure(function(...)
             local duration, harvest = original(...)
             if state.enabled and type(duration) == "number" and duration < math.huge then
-                return 0, harvest
+                local ok, sword = pcall(state.holdingSword)
+                if ok and not sword then return 0, harvest end
             end
             return duration, harvest
         end))
@@ -833,6 +852,8 @@ if not breakHook and type(hookfunction) == "function" then
         env.TerraformBreakHook = state
     end
 end
+
+if breakHook then breakHook.holdingSword = holdingSword end
 
 local function syncHooks()
     if damageHook then damageHook.noFall = settings.noFall; damageHook.noDrown = settings.noDrown end
@@ -1317,7 +1338,7 @@ movementTab:CreateSection({name = "Protection"})
 toggle(movementTab, "No fall damage", "noFall", damageHook and "Blocks Terraform's fall damage remote." or "Unsupported by this executor")
 toggle(movementTab, "No drowning damage", "noDrown", damageHook and "Blocks Terraform's drowning damage remote." or "Unsupported by this executor")
 movementTab:CreateSection({name = "Mining"})
-toggle(movementTab, "Insta Break", "fastBreak", breakHook and "Breaks blocks instantly." or "Unsupported by this executor")
+toggle(movementTab, "Insta Break", "fastBreak", breakHook and "Breaks blocks instantly, except while holding a sword." or "Unsupported by this executor")
 movementTab:CreateSection({name = "Movement"})
 toggle(movementTab, "Speed", "speed")
 slider(movementTab, "Walk speed", "walkSpeed", 16, 80, 1)
