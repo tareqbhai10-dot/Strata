@@ -54,6 +54,7 @@ local settings = {
     noFall = false,
     noDrown = false,
     fastBreak = false,
+    fastPlace = true,
     playerNames = false,
     animalNames = false,
     playerNameDistance = 150,
@@ -101,6 +102,7 @@ local indicatorFeatures = {
     {"noFall", "No fall damage"},
     {"noDrown", "No drowning"},
     {"fastBreak", "Insta Break"},
+    {"fastPlace", "Fast place"},
     {"speed", "Speed"},
     {"jump", "Jump boost"},
     {"infiniteJump", "Infinite jump"},
@@ -635,6 +637,7 @@ local bindings = {
     {id = "noFall", label = "No fall damage", group = "Movement", flag = "noFall"},
     {id = "noDrown", label = "No drowning", group = "Movement", flag = "noDrown"},
     {id = "fastBreak", label = "Insta Break", group = "Movement", flag = "fastBreak"},
+    {id = "fastPlace", label = "Fast place", group = "Movement", flag = "fastPlace"},
     {id = "speed", label = "Speed", group = "Movement", flag = "speed"},
     {id = "jump", label = "Jump boost", group = "Movement", flag = "jump"},
     {id = "infiniteJump", label = "Infinite jump", group = "Movement", flag = "infiniteJump"},
@@ -855,11 +858,84 @@ end
 
 if breakHook then breakHook.holdingSword = holdingSword end
 
+local placeHook = env.TerraformPlaceHook
+do
+    local ok, canSpeedUp = pcall(function()
+        local ComputeBlockId = require(ReplicatedStorage.Systems.ActionsSystem.Libs.ComputeBlockId)
+        local Cursor = require(ReplicatedStorage.Libs.Cursor)
+        local ControlsEnabled = require(ReplicatedStorage.Client.ControlsEnabled)
+        local BlockOrientation = require(ReplicatedStorage.Systems.BlocksSystem.Libs.BlockOrientation)
+        local BlocksFunctions = require(ReplicatedStorage.Systems.BlocksSystem.Libs.BlocksFunctions)
+        local IsStorageBlockState = require(ReplicatedStorage.Systems.InventorySystem.Libs.IsStorageBlockState)
+        local Event = require(ReplicatedStorage.Systems.ActionsSystem.Libs.Event)
+        return function()
+            if not alive or not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+                or UserInputService:GetFocusedTextBox() or not ControlsEnabled() then return false end
+            local held = HotbarState and HotbarState.getCurrentlyHeldItemId()
+            local block = held and ComputeBlockId(held)
+            if not block or block <= 0 then return false end
+            if not ReplicatedStorage.Client.States.Sneaking.Value then
+                local object, hit = Cursor.getHoveredBlockInstance(false)
+                local coordinates = Cursor.coordinatesFromHoveredBlock(false)
+                if not object or not hit or not coordinates then return false end
+                if IsStorageBlockState(object:GetAttribute(BlockState.ATTRIBUTE)) then return false end
+                local orientation = BlockOrientation.client_getOrientationInfos(coordinates * 4, Workspace.CurrentCamera.CFrame, hit)
+                local event = Event.new(LocalPlayer, Event.Action.RIGHT_CLICK_BLOCK, coordinates, HotbarState.getCurrentHotbarSlot(), orientation)
+                if BlocksFunctions.canInteract(event) then return false end
+            end
+            return true
+        end
+    end)
+    if ok then
+        if not placeHook and type(getgc) == "function" and type(hookfunction) == "function"
+            and type(debug.getconstants) == "function" and type(debug.setconstant) == "function" then
+            pcall(function()
+                local controller = ReplicatedStorage.Client.Controllers.InteractionController
+                for _, fn in ipairs(getgc()) do
+                    if type(fn) == "function" and islclosure(fn) and getfenv(fn).script == controller
+                        and debug.info(fn, "n") == "interact" then
+                        for index, value in pairs(debug.getconstants(fn)) do
+                            if value == 0.33 then
+                                local state = {enabled = false, index = index, normal = value, current = value, canSpeedUp = canSpeedUp}
+                                local original
+                                original = hookfunction(fn, asClosure(function(...)
+                                    local allowed, fast = false, false
+                                    if state.enabled then allowed, fast = pcall(state.canSpeedUp) end
+                                    local delay = allowed and fast and 0.06 or state.normal
+                                    if state.current ~= delay then
+                                        local changed = pcall(debug.setconstant, original, state.index, delay)
+                                        if changed then state.current = delay else state.enabled = false end
+                                    end
+                                    return original(...)
+                                end))
+                                state.original = original
+                                placeHook = state
+                                env.TerraformPlaceHook = state
+                                break
+                            end
+                        end
+                    end
+                    if placeHook then break end
+                end
+            end)
+        end
+        if placeHook then placeHook.canSpeedUp = canSpeedUp end
+    end
+end
+if not placeHook then settings.fastPlace = false end
+
 local function syncHooks()
     if damageHook then damageHook.noFall = settings.noFall; damageHook.noDrown = settings.noDrown end
     if breakHook then
         breakHook.value = 0 -- Older loaded hooks still read this value.
         breakHook.enabled = settings.fastBreak
+    end
+    if placeHook then
+        placeHook.enabled = settings.fastPlace
+        if not settings.fastPlace and placeHook.current ~= placeHook.normal then
+            local ok = pcall(debug.setconstant, placeHook.original, placeHook.index, placeHook.normal)
+            if ok then placeHook.current = placeHook.normal end
+        end
     end
 end
 
@@ -945,6 +1021,7 @@ end
 local function setFlag(key, value, fromUi)
     if value and (key == "noFall" or key == "noDrown") and not damageHook then notify("Damage interception unsupported", "Protection"); return end
     if value and key == "fastBreak" and not breakHook then notify("Function hooking unsupported", "Mining"); return end
+    if value and key == "fastPlace" and not placeHook then notify("Placement delay hook unavailable", "Building"); return end
     if key == "oreDistance" or key == "chestDistance" or key == "playerNameDistance" then
         local minimum = key == "playerNameDistance" and 25 or 50
         value = math.clamp(tonumber(value) or minimum, minimum, 800)
@@ -1007,6 +1084,7 @@ local function loadConfig(name)
 end
 
 if autoloadConfig then loadConfig(autoloadConfig) end
+syncHooks()
 saveWhitelist()
 
 local function saveConfig(requestedName, overwrite)
@@ -1147,6 +1225,7 @@ local function stop()
     settings.noFall = false
     settings.noDrown = false
     settings.fastBreak = false
+    settings.fastPlace = false
     syncHooks()
     for index, marker in pairs(oreMarkers) do
         marker.part:Destroy()
@@ -1209,6 +1288,7 @@ env.TerraformHelper = {
             noFall = settings.noFall,
             noDrown = settings.noDrown,
             fastBreak = settings.fastBreak,
+            fastPlace = settings.fastPlace,
             activeConfig = activeConfig,
         }
     end,
@@ -1339,6 +1419,7 @@ toggle(movementTab, "No fall damage", "noFall", damageHook and "Blocks Terraform
 toggle(movementTab, "No drowning damage", "noDrown", damageHook and "Blocks Terraform's drowning damage remote." or "Unsupported by this executor")
 movementTab:CreateSection({name = "Mining"})
 toggle(movementTab, "Insta Break", "fastBreak", breakHook and "Breaks blocks instantly, except while holding a sword." or "Unsupported by this executor")
+toggle(movementTab, "Fast place", "fastPlace", placeHook and "Hold RMB to place blocks faster. Release to stop." or "Placement delay hook unavailable")
 movementTab:CreateSection({name = "Movement"})
 toggle(movementTab, "Speed", "speed")
 slider(movementTab, "Walk speed", "walkSpeed", 16, 80, 1)
