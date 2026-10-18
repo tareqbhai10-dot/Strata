@@ -55,6 +55,7 @@ local settings = {
     noDrown = false,
     fastBreak = false,
     fastPlace = true,
+    reachBlocks = 5,
     playerNames = false,
     animalNames = false,
     playerNameDistance = 150,
@@ -924,6 +925,23 @@ do
 end
 if not placeHook then settings.fastPlace = false end
 
+-- Breaking and placing both use this cursor ray. One voxel is four studs.
+local reachHook = env.TerraformReachHook
+if not reachHook and type(debug.getconstants) == "function" and type(debug.setconstant) == "function" then
+    pcall(function()
+        local cursor = require(ReplicatedStorage.Libs.Cursor)
+        local fn = cursor.getHoveredBlockInstance
+        local matches = {}
+        for index, value in pairs(debug.getconstants(fn)) do
+            if value == 20 then table.insert(matches, index) end
+        end
+        if #matches == 1 then
+            reachHook = {fn = fn, index = matches[1], normal = 20, current = 20}
+            env.TerraformReachHook = reachHook
+        end
+    end)
+end
+
 local function syncHooks()
     if damageHook then damageHook.noFall = settings.noFall; damageHook.noDrown = settings.noDrown end
     if breakHook then
@@ -935,6 +953,13 @@ local function syncHooks()
         if not settings.fastPlace and placeHook.current ~= placeHook.normal then
             local ok = pcall(debug.setconstant, placeHook.original, placeHook.index, placeHook.normal)
             if ok then placeHook.current = placeHook.normal end
+        end
+    end
+    if reachHook then
+        local distance = alive and settings.reachBlocks * 4 or reachHook.normal
+        if reachHook.current ~= distance then
+            local ok = pcall(debug.setconstant, reachHook.fn, reachHook.index, distance)
+            if ok then reachHook.current = distance end
         end
     end
 end
@@ -1019,6 +1044,12 @@ if canPersist then
 end
 
 local function setFlag(key, value, fromUi)
+    if key == "reachBlocks" then
+        local blocks = tonumber(value) or 5
+        if blocks ~= blocks then blocks = 5 end
+        value = math.clamp(math.floor(blocks * 2 + 0.5) / 2, 1, 8)
+        if not reachHook then notify("Block reach is unavailable in this executor", "Reach"); return end
+    end
     if value and (key == "noFall" or key == "noDrown") and not damageHook then notify("Damage interception unsupported", "Protection"); return end
     if value and key == "fastBreak" and not breakHook then notify("Function hooking unsupported", "Mining"); return end
     if value and key == "fastPlace" and not placeHook then notify("Placement delay hook unavailable", "Building"); return end
@@ -1289,6 +1320,7 @@ env.TerraformHelper = {
             noDrown = settings.noDrown,
             fastBreak = settings.fastBreak,
             fastPlace = settings.fastPlace,
+            reachBlocks = settings.reachBlocks,
             activeConfig = activeConfig,
         }
     end,
@@ -1420,6 +1452,12 @@ toggle(movementTab, "No drowning damage", "noDrown", damageHook and "Blocks Terr
 movementTab:CreateSection({name = "Mining"})
 toggle(movementTab, "Insta Break", "fastBreak", breakHook and "Breaks blocks instantly, except while holding a sword." or "Unsupported by this executor")
 toggle(movementTab, "Fast place", "fastPlace", placeHook and "Hold RMB to place blocks faster. Release to stop." or "Placement delay hook unavailable")
+if reachHook then
+    slider(movementTab, "Reach", "reachBlocks", 1, 8, 0.5, " blocks")
+    movementTab:CreateText({name = "Block reach", text = "Breaking and placement only. Default: 5 blocks. 1 block = 4 studs. The server checks distance from your character, so targets at the maximum may be rejected."})
+else
+    movementTab:CreateText({name = "Block reach", text = "Reach adjustment is unavailable in this executor."})
+end
 movementTab:CreateSection({name = "Movement"})
 toggle(movementTab, "Speed", "speed")
 slider(movementTab, "Walk speed", "walkSpeed", 16, 80, 1)
@@ -1530,6 +1568,7 @@ local searchableFeatures = {
     {"Player kill aura", "Combat"}, {"Animal kill aura", "Combat"}, {"Whitelist", "Combat"},
     {"Player Name ESP", "ESP"}, {"Animal Name ESP", "ESP"}, {"Player highlight", "ESP"}, {"Animal highlight", "ESP"},
     {"No fall damage", "Movement"}, {"No drowning damage", "Movement"}, {"Insta Break", "Movement"},
+    {"Reach", "Movement"},
     {"Speed", "Movement"}, {"Jump boost", "Movement"}, {"Phase", "Movement"},
     {"Configurations", "Configs"}, {"Keybinds", "Keybinds"}, {"Active features", "Active"},
 }
